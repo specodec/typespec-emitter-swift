@@ -1,0 +1,27 @@
+{
+  "name": "@specodec/typespec-specodec-swift",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "typespec": {
+    "emitter": true,
+    "options": {
+      "@specodec/typespec-specodec-swift": {
+        "type": "object",
+        "properties": {
+          "emitter-output-dir": { "type": "string" }
+        },
+        "required": ["emitter-output-dir"]
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@typespec/compiler": "1.11.0",
+    "typescript": "^5.8.0"
+  }
+}
