@@ -1,9 +1,11 @@
 import {
   EmitContext,
   emitFile,
+  listServices,
   navigateTypesInNamespace,
   Model,
   Namespace,
+  Interface,
   Program,
   Type,
   Scalar,
@@ -223,44 +225,50 @@ function emitModel(m: Model): string {
   return lines.join("\n");
 }
 
-function collectModels(program: Program): Model[] {
-  const models: Model[] = [];
-  const seen = new Set<string>();
+function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
+  const services = listServices(program);
+  const result: { serviceName: string; models: Model[] }[] = [];
 
-  function walkNs(ns: Namespace) {
-    navigateTypesInNamespace(ns, {
-      model: (m: Model) => {
-        if (m.name && !seen.has(m.name) && !isArrayType(m)) {
-          models.push(m);
-          seen.add(m.name);
-        }
-      },
-    });
-    for (const [, child] of ns.namespaces) {
-      walkNs(child);
+  function collectFromNs(ns: Namespace) {
+    for (const [, iface] of ns.interfaces) {
+      const models: Model[] = [];
+      const seen = new Set<string>();
+      navigateTypesInNamespace(ns, {
+        model: (m: Model) => {
+          if (m.name && !seen.has(m.name) && !isArrayType(m)) {
+            models.push(m);
+            seen.add(m.name);
+          }
+        },
+      });
+      result.push({ serviceName: iface.name, models });
     }
   }
 
-  const globalNs = program.getGlobalNamespaceType();
-  walkNs(globalNs);
-  return models;
+  for (const svc of services) collectFromNs(svc.type);
+  if (result.length === 0) {
+    const globalNs = program.getGlobalNamespaceType();
+    for (const [, ns] of globalNs.namespaces) collectFromNs(ns);
+    collectFromNs(globalNs);
+  }
+  return result;
 }
 
 export async function $onEmit(context: EmitContext<EmitterOptions>) {
   const program = context.program;
   const outputDir = context.emitterOutputDir;
+  const snake = (s: string) => s.replace(/([A-Z])/g, (m, c, i) => (i ? "_" : "") + c.toLowerCase());
 
-  const models = collectModels(program);
-  if (models.length === 0) return;
-
-  const lines: string[] = [];
-  lines.push("import Foundation");
-  lines.push("import Specodec");
-  lines.push("");
-
-  for (const m of models) {
-    lines.push(emitModel(m));
+  for (const svc of collectServices(program)) {
+    if (svc.models.length === 0) continue;
+    const lines: string[] = [];
+    lines.push("import Foundation");
+    lines.push("import Specodec");
+    lines.push("");
+    for (const m of svc.models) {
+      lines.push(emitModel(m));
+    }
+    const fileName = `${snake(svc.serviceName)}_types.swift`;
+    await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
   }
-
-  await emitFile(program, { path: `${outputDir}/Types.swift`, content: lines.join("\n") });
 }
