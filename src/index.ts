@@ -268,7 +268,7 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
     for (const m of svc.models) {
       lines.push(emitModel(m));
     }
-    const fileName = `${snake(svc.serviceName)}_types.swift`;
+    const fileName = `${svc.serviceName}Types.swift`;
     await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
   }
 }
