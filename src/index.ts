@@ -9,10 +9,16 @@ import {
   Program,
   Type,
   Scalar,
+  Diagnostic,
 } from "@typespec/compiler";
+import {
+  checkReservedKeyword,
+  formatReservedError,
+} from "@specodec/typespec-specodec-core";
 
 export type EmitterOptions = {
   "emitter-output-dir": string;
+  "ignore-reserved-keywords"?: boolean;
 };
 
 interface FieldInfo {
@@ -33,6 +39,10 @@ function isArrayType(type: Type): boolean {
   return type.kind === "Model" && !!(type as Model).indexer;
 }
 
+function isModelType(type: Type): boolean {
+  return type.kind === "Model" && !!(type as Model).name && !isArrayType(type);
+}
+
 function arrayElementType(type: Type): Type {
   return (type as Model).indexer!.value;
 }
@@ -43,15 +53,20 @@ function typeToSwift(type: Type): string {
     switch (name) {
       case "string": return "String";
       case "boolean": return "Bool";
-      case "int8": case "int16": case "int32": case "integer": return "Int32";
+      case "int8": return "Int8";
+      case "int16": return "Int16";
+      case "int32": case "integer": return "Int32";
       case "int64": return "Int64";
-      case "uint8": case "uint16": case "uint32": return "UInt32";
+      case "uint8": return "UInt8";
+      case "uint16": return "UInt16";
+      case "uint32": return "UInt32";
       case "uint64": return "UInt64";
       case "float32": return "Float";
       case "float64": case "float": case "decimal": return "Double";
       case "bytes": return "Data";
     }
   }
+  if (type.kind === "Enum") return "String";
   if (isArrayType(type)) return `[${typeToSwift(arrayElementType(type))}]`;
   if (type.kind === "Model") return (type as Model).name || "Any";
   return "Any";
@@ -61,7 +76,8 @@ function defaultForSwiftType(swiftType: string): string {
   switch (swiftType) {
     case "String": return `""`;
     case "Bool": return "false";
-    case "Int32": case "Int64": case "UInt32": case "UInt64": return "0";
+    case "Int8": case "Int16": case "Int32": case "Int64": return "0";
+    case "UInt8": case "UInt16": case "UInt32": case "UInt64": return "0";
     case "Float": case "Double": return "0";
     case "Data": return "Data()";
   }
@@ -69,47 +85,90 @@ function defaultForSwiftType(swiftType: string): string {
   return "nil";
 }
 
-function writeExpr(type: Type, expr: string): string {
-  const name = scalarName(type);
-  if (name) {
-    switch (name) {
-      case "string": return `w.writeString(${expr})`;
-      case "boolean": return `w.writeBool(${expr})`;
-      case "int8": case "int16": case "int32": case "integer": return `w.writeInt32(Int32(${expr}))`;
-      case "int64": return `w.writeInt64(${expr})`;
-      case "uint8": case "uint16": case "uint32": return `w.writeUint32(UInt32(${expr}))`;
-      case "uint64": return `w.writeUint64(${expr})`;
-      case "float32": return `w.writeFloat32(${expr})`;
-      case "float64": case "float": case "decimal": return `w.writeFloat64(${expr})`;
-      case "bytes": return `w.writeBytes(${expr})`;
-    }
-  }
+function writeJsonExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
-    return `w.beginArray(${expr}.count); for _e in ${expr} { w.nextElement(); ${writeExpr(elem, "_e")} }; w.endArray()`;
+    return `${w}.beginArray(); for _e in ${expr} { ${w}.nextElement(); ${writeJsonExpr("_e", elem, w)} }; ${w}.endArray()`;
   }
-  return `/* TODO: write model */`;
+  const sn = scalarName(type);
+  if (sn) {
+    switch (sn) {
+      case "string": return `${w}.writeString(${expr})`;
+      case "boolean": return `${w}.writeBool(${expr})`;
+      case "int8": return `${w}.writeInt32(Int32(${expr}))`;
+      case "int16": return `${w}.writeInt32(Int32(${expr}))`;
+      case "int32": case "integer": return `${w}.writeInt32(${expr})`;
+      case "int64": return `${w}.writeInt64(${expr})`;
+      case "uint8": return `${w}.writeUint32(UInt32(${expr}))`;
+      case "uint16": return `${w}.writeUint32(UInt32(${expr}))`;
+      case "uint32": return `${w}.writeUint32(${expr})`;
+      case "uint64": return `${w}.writeUint64(${expr})`;
+      case "float32": return `${w}.writeFloat32(${expr})`;
+      case "float64": case "float": case "decimal": return `${w}.writeFloat64(${expr})`;
+      case "bytes": return `${w}.writeBytes(${expr})`;
+    }
+  }
+  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
+  if (isModelType(type)) {
+    return `_writeJson${(type as Model).name}(${w}, ${expr})`;
+  }
+  return `/* TODO: unknown type */`;
+}
+
+function writeMsgPackExpr(expr: string, type: Type, w: string): string {
+  if (isArrayType(type)) {
+    const elem = arrayElementType(type);
+    return `${w}.beginArray(${expr}.count); for _e in ${expr} { ${writeMsgPackExpr("_e", elem, w)} }; ${w}.endArray()`;
+  }
+  const sn = scalarName(type);
+  if (sn) {
+    switch (sn) {
+      case "string": return `${w}.writeString(${expr})`;
+      case "boolean": return `${w}.writeBool(${expr})`;
+      case "int8": return `${w}.writeInt32(Int32(${expr}))`;
+      case "int16": return `${w}.writeInt32(Int32(${expr}))`;
+      case "int32": case "integer": return `${w}.writeInt32(${expr})`;
+      case "int64": return `${w}.writeInt64(${expr})`;
+      case "uint8": return `${w}.writeUint32(UInt32(${expr}))`;
+      case "uint16": return `${w}.writeUint32(UInt32(${expr}))`;
+      case "uint32": return `${w}.writeUint32(${expr})`;
+      case "uint64": return `${w}.writeUint64(${expr})`;
+      case "float32": return `${w}.writeFloat32(${expr})`;
+      case "float64": case "float": case "decimal": return `${w}.writeFloat64(${expr})`;
+      case "bytes": return `${w}.writeBytes(${expr})`;
+    }
+  }
+  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
+  if (isModelType(type)) {
+    return `_writeMsgPack${(type as Model).name}(${w}, ${expr})`;
+  }
+  return `/* TODO: unknown type */`;
 }
 
 function readExpr(type: Type): string {
-  const name = scalarName(type);
-  if (name) {
-    switch (name) {
+  const sn = scalarName(type);
+  if (sn) {
+    switch (sn) {
       case "string": return "try r.readString()";
       case "boolean": return "try r.readBool()";
-      case "int8": case "int16": case "int32": case "integer": return "try r.readInt32()";
+      case "int8": return "Int8(try r.readInt32())";
+      case "int16": return "Int16(try r.readInt32())";
+      case "int32": case "integer": return "try r.readInt32()";
       case "int64": return "try r.readInt64()";
-      case "uint8": case "uint16": case "uint32": return "try r.readUint32()";
+      case "uint8": return "UInt8(try r.readUint32())";
+      case "uint16": return "UInt16(try r.readUint32())";
+      case "uint32": return "try r.readUint32()";
       case "uint64": return "try r.readUint64()";
       case "float32": return "try r.readFloat32()";
       case "float64": case "float": case "decimal": return "try r.readFloat64()";
       case "bytes": return "try r.readBytes()";
     }
   }
+  if (type.kind === "Enum") return "try r.readEnum()";
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
     const sw = typeToSwift(type);
-    return `{ var _arr: ${sw} = []; try r.beginArray(); while try r.hasNextElement() { _arr.append(${readExpr(elem)}) }; try r.endArray(); return _arr }()`;
+    return `try { var _arr: ${sw} = []; try r.beginArray(); while try r.hasNextElement() { _arr.append(${readExpr(elem)}) }; try r.endArray(); return _arr }()`;
   }
   if (type.kind === "Model") {
     const modelName = (type as Model).name;
@@ -126,12 +185,25 @@ function extractFields(model: Model): FieldInfo[] {
   return fields;
 }
 
+function isSelfReferencing(model: Model): boolean {
+  const name = model.name;
+  for (const [, prop] of model.properties) {
+    let t = prop.type;
+    if (isArrayType(t)) t = arrayElementType(t);
+    if (t.kind === "Model" && (t as Model).name === name) return true;
+  }
+  return false;
+}
+
 function emitModel(m: Model): string {
   const name = m.name!;
   const fields = extractFields(m);
   const lines: string[] = [];
+  const requiredFields = fields.filter(f => !f.optional);
+  const optionalFields = fields.filter(f => f.optional);
+  const useClass = isSelfReferencing(m);
 
-  lines.push(`public struct ${name} {`);
+  lines.push(`public ${useClass ? 'final class' : 'struct'} ${name} {`);
   for (const f of fields) {
     const swType = typeToSwift(f.type);
     lines.push(`    public var ${f.name}: ${swType}${f.optional ? "?" : ""}`);
@@ -149,75 +221,74 @@ function emitModel(m: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  const optionalFields = fields.filter(f => f.optional);
-
-  const jsonWriteLines: string[] = [];
-  jsonWriteLines.push(`        let w = JsonWriter()`);
-  jsonWriteLines.push(`        w.beginObject()`);
+  lines.push(`private func _writeJson${name}(_ w: JsonWriter, _ obj: ${name}) {`);
+  lines.push(`    w.beginObject()`);
   for (const f of fields) {
     if (f.optional) {
-      jsonWriteLines.push(`        if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeExpr(f.type, `_${f.name}`)} }`);
+      lines.push(`    if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeJsonExpr(`_${f.name}`, f.type, "w")} }`);
     } else {
-      jsonWriteLines.push(`        w.writeField("${f.name}"); ${writeExpr(f.type, `obj.${f.name}`)}`);
+      lines.push(`    w.writeField("${f.name}"); ${writeJsonExpr(`obj.${f.name}`, f.type, "w")}`);
     }
   }
-  jsonWriteLines.push(`        w.endObject()`);
-  jsonWriteLines.push(`        return w.toBytes()`);
+  lines.push(`    w.endObject()`);
+  lines.push(`}`);
+  lines.push(``);
 
-  const msgPackWriteLines: string[] = [];
-  const requiredCount = fields.filter(f => !f.optional).length;
-  if (optionalFields.length === 0) {
-    msgPackWriteLines.push(`        let w = MsgPackWriter()`);
-    msgPackWriteLines.push(`        w.beginObject(${requiredCount})`);
-  } else {
-    msgPackWriteLines.push(`        var _n = ${requiredCount}`);
+  lines.push(`private func _writeMsgPack${name}(_ w: MsgPackWriter, _ obj: ${name}) {`);
+  if (optionalFields.length > 0) {
+    lines.push(`    var _n = ${requiredFields.length}`);
     for (const f of optionalFields) {
-      msgPackWriteLines.push(`        if obj.${f.name} != nil { _n += 1 }`);
+      lines.push(`    if obj.${f.name} != nil { _n += 1 }`);
     }
-    msgPackWriteLines.push(`        let w = MsgPackWriter()`);
-    msgPackWriteLines.push(`        w.beginObject(_n)`);
+    lines.push(`    w.beginObject(_n)`);
+  } else {
+    lines.push(`    w.beginObject(${fields.length})`);
   }
   for (const f of fields) {
     if (f.optional) {
-      msgPackWriteLines.push(`        if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeExpr(f.type, `_${f.name}`)} }`);
+      lines.push(`    if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeMsgPackExpr(`_${f.name}`, f.type, "w")} }`);
     } else {
-      msgPackWriteLines.push(`        w.writeField("${f.name}"); ${writeExpr(f.type, `obj.${f.name}`)}`);
+      lines.push(`    w.writeField("${f.name}"); ${writeMsgPackExpr(`obj.${f.name}`, f.type, "w")}`);
     }
   }
-  msgPackWriteLines.push(`        w.endObject()`);
-  msgPackWriteLines.push(`        return w.toBytes()`);
+  lines.push(`    w.endObject()`);
+  lines.push(`}`);
+  lines.push(``);
 
-  const decodeLines: string[] = [];
+  lines.push(`nonisolated(unsafe) public let ${name}Codec = SpecCodec<${name}>(`);
+  lines.push(`    encodeJson: { obj in`);
+  lines.push(`        let w = JsonWriter()`);
+  lines.push(`        _writeJson${name}(w, obj)`);
+  lines.push(`        return w.toBytes()`);
+  lines.push(`    },`);
+  lines.push(`    encodeMsgPack: { obj in`);
+  lines.push(`        let w = MsgPackWriter()`);
+  lines.push(`        _writeMsgPack${name}(w, obj)`);
+  lines.push(`        return w.toBytes()`);
+  lines.push(`    },`);
+  lines.push(`    decode: { r in`);
   for (const f of fields) {
     const swType = typeToSwift(f.type);
     if (f.optional) {
-      decodeLines.push(`        var _${f.name}: ${swType}? = nil`);
+      lines.push(`        var _${f.name}: ${swType}? = nil`);
+    } else if (isModelType(f.type)) {
+      lines.push(`        var _${f.name}: ${swType}! = nil`);
     } else {
-      decodeLines.push(`        var _${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
+      lines.push(`        var _${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
     }
   }
-  decodeLines.push(`        try r.beginObject()`);
-  decodeLines.push(`        while try r.hasNextField() {`);
-  decodeLines.push(`            switch try r.readFieldName() {`);
+  lines.push(`        try r.beginObject()`);
+  lines.push(`        while try r.hasNextField() {`);
+  lines.push(`            switch try r.readFieldName() {`);
   for (const f of fields) {
-    decodeLines.push(`            case "${f.name}": _${f.name} = ${readExpr(f.type)}`);
+    lines.push(`            case "${f.name}": _${f.name} = ${readExpr(f.type)}`);
   }
-  decodeLines.push(`            default: try r.skip()`);
-  decodeLines.push(`            }`);
-  decodeLines.push(`        }`);
-  decodeLines.push(`        try r.endObject()`);
+  lines.push(`            default: try r.skip()`);
+  lines.push(`            }`);
+  lines.push(`        }`);
+  lines.push(`        try r.endObject()`);
   const ctorArgs = fields.map(f => `${f.name}: _${f.name}`).join(", ");
-  decodeLines.push(`        return ${name}(${ctorArgs})`);
-
-  lines.push(`public let ${name}Codec = SpecCodec<${name}>(`);
-  lines.push(`    encodeJson: { obj in`);
-  for (const l of jsonWriteLines) lines.push(`    ${l}`);
-  lines.push(`    },`);
-  lines.push(`    encodeMsgPack: { obj in`);
-  for (const l of msgPackWriteLines) lines.push(`    ${l}`);
-  lines.push(`    },`);
-  lines.push(`    decode: { r in`);
-  for (const l of decodeLines) lines.push(`    ${l}`);
+  lines.push(`        return ${name}(${ctorArgs})`);
   lines.push(`    }`);
   lines.push(`)`);
   lines.push(``);
@@ -229,19 +300,19 @@ function collectServices(program: Program): { serviceName: string; models: Model
   const services = listServices(program);
   const result: { serviceName: string; models: Model[] }[] = [];
 
-  function collectFromNs(ns: Namespace) {
-    for (const [, iface] of ns.interfaces) {
-      const models: Model[] = [];
-      const seen = new Set<string>();
-      navigateTypesInNamespace(ns, {
-        model: (m: Model) => {
-          if (m.name && !seen.has(m.name) && !isArrayType(m)) {
-            models.push(m);
-            seen.add(m.name);
-          }
-        },
-      });
-      result.push({ serviceName: iface.name, models });
+  function collectFromNs(ns: Namespace, iface?: Interface) {
+    const models: Model[] = [];
+    const seen = new Set<string>();
+    navigateTypesInNamespace(ns, {
+      model: (m: Model) => {
+        if (m.name && !seen.has(m.name) && !isArrayType(m)) {
+          models.push(m);
+          seen.add(m.name);
+        }
+      },
+    });
+    if (models.length > 0) {
+      result.push({ serviceName: iface?.name || ns.name || "TestService", models });
     }
   }
 
@@ -257,9 +328,42 @@ function collectServices(program: Program): { serviceName: string; models: Model
 export async function $onEmit(context: EmitContext<EmitterOptions>) {
   const program = context.program;
   const outputDir = context.emitterOutputDir;
+  const ignoreReservedKeywords = context.options["ignore-reserved-keywords"] ?? false;
   const snake = (s: string) => s.replace(/([A-Z])/g, (m, c, i) => (i ? "_" : "") + c.toLowerCase());
+  const services = collectServices(program);
 
-  for (const svc of collectServices(program)) {
+  const reservedFieldErrors: Diagnostic[] = [];
+  for (const svc of services) {
+    for (const m of svc.models) {
+      if (!m.name) continue;
+      for (const [fieldName, prop] of m.properties) {
+        const reservedIn = checkReservedKeyword(fieldName);
+        if (reservedIn.length > 0) {
+          const message = formatReservedError(fieldName, m.name, reservedIn);
+          const diag: Diagnostic = {
+            severity: "error",
+            code: "reserved-keyword",
+            message,
+            target: prop,
+          };
+          reservedFieldErrors.push(diag);
+        }
+      }
+    }
+  }
+
+  if (reservedFieldErrors.length > 0 && !ignoreReservedKeywords) {
+    program.reportDiagnostics(reservedFieldErrors);
+    return;
+  }
+
+  if (reservedFieldErrors.length > 0 && ignoreReservedKeywords) {
+    for (const diag of reservedFieldErrors) {
+      console.warn(`Warning: ${diag.message}`);
+    }
+  }
+
+  for (const svc of services) {
     if (svc.models.length === 0) continue;
     const lines: string[] = [];
     lines.push("import Foundation");
