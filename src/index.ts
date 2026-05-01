@@ -2,6 +2,7 @@ import {
   EmitContext,
   emitFile,
   listServices,
+  getNamespaceFullName,
   navigateTypesInNamespace,
   Model,
   Namespace,
@@ -36,14 +37,26 @@ function scalarName(type: Type): string | null {
 }
 
 function isArrayType(type: Type): boolean {
-  return type.kind === "Model" && !!(type as Model).indexer;
+  if (type.kind !== "Model" || !(type as Model).indexer) return false;
+  const keyName = ((type as Model).indexer!.key as any).name;
+  return keyName === "integer";
+}
+
+function isRecordType(type: Type): boolean {
+  if (type.kind !== "Model" || !(type as Model).indexer) return false;
+  const keyName = ((type as Model).indexer!.key as any).name;
+  return keyName === "string";
 }
 
 function isModelType(type: Type): boolean {
-  return type.kind === "Model" && !!(type as Model).name && !isArrayType(type);
+  return type.kind === "Model" && !!(type as Model).name && !isArrayType(type) && !isRecordType(type);
 }
 
 function arrayElementType(type: Type): Type {
+  return (type as Model).indexer!.value;
+}
+
+function recordElementType(type: Type): Type {
   return (type as Model).indexer!.value;
 }
 
@@ -68,6 +81,7 @@ function typeToSwift(type: Type): string {
   }
   if (type.kind === "Enum") return "String";
   if (isArrayType(type)) return `[${typeToSwift(arrayElementType(type))}]`;
+  if (isRecordType(type)) return `[String: ${typeToSwift(recordElementType(type))}]`;
   if (type.kind === "Model") return (type as Model).name || "Any";
   return "Any";
 }
@@ -78,17 +92,24 @@ function defaultForSwiftType(swiftType: string): string {
     case "Bool": return "false";
     case "Int8": case "Int16": case "Int32": case "Int64": return "0";
     case "UInt8": case "UInt16": case "UInt32": case "UInt64": return "0";
-    case "Float": case "Double": return "0";
+    case "Float": case "Double": return "0.0";
     case "Data": return "Data()";
   }
+  // For model types, use default initializer
+  if (swiftType.startsWith("[String:")) return "[:]";
   if (swiftType.startsWith("[")) return "[]";
-  return "nil";
+  return `${swiftType}()`;
 }
 
-function writeJsonExpr(expr: string, type: Type, w: string): string {
+// Single format-agnostic write expression using SpecWriter
+function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
-    return `${w}.beginArray(); for _e in ${expr} { ${w}.nextElement(); ${writeJsonExpr("_e", elem, w)} }; ${w}.endArray()`;
+    return `${w}.beginArray(${expr}.count); for _e in ${expr} { ${w}.nextElement(); ${writeExpr("_e", elem, w)} }; ${w}.endArray()`;
+  }
+  if (isRecordType(type)) {
+    const elem = recordElementType(type);
+    return `${w}.beginObject(${expr}.count); for (_k, _v) in ${expr} { ${w}.writeField(_k); ${writeExpr("_v", elem, w)} }; ${w}.endObject()`;
   }
   const sn = scalarName(type);
   if (sn) {
@@ -110,42 +131,22 @@ function writeJsonExpr(expr: string, type: Type, w: string): string {
   }
   if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
   if (isModelType(type)) {
-    return `_writeJson${(type as Model).name}(${w}, ${expr})`;
+    return `_write${(type as Model).name}(${w}, ${expr})`;
   }
   return `/* TODO: unknown type */`;
 }
 
-function writeMsgPackExpr(expr: string, type: Type, w: string): string {
+function readExpr(type: Type, optional?: boolean): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
-    return `${w}.beginArray(${expr}.count); for _e in ${expr} { ${writeMsgPackExpr("_e", elem, w)} }; ${w}.endArray()`;
+    const swiftElem = typeToSwift(elem);
+    return `try { () throws -> [${swiftElem}] in var _a: [${swiftElem}] = []; try r.beginArray(); while try r.hasNextElement() { _a.append(${readExpr(elem)}) }; try r.endArray(); return _a }()`;
   }
-  const sn = scalarName(type);
-  if (sn) {
-    switch (sn) {
-      case "string": return `${w}.writeString(${expr})`;
-      case "boolean": return `${w}.writeBool(${expr})`;
-      case "int8": return `${w}.writeInt32(Int32(${expr}))`;
-      case "int16": return `${w}.writeInt32(Int32(${expr}))`;
-      case "int32": case "integer": return `${w}.writeInt32(${expr})`;
-      case "int64": return `${w}.writeInt64(${expr})`;
-      case "uint8": return `${w}.writeUint32(UInt32(${expr}))`;
-      case "uint16": return `${w}.writeUint32(UInt32(${expr}))`;
-      case "uint32": return `${w}.writeUint32(${expr})`;
-      case "uint64": return `${w}.writeUint64(${expr})`;
-      case "float32": return `${w}.writeFloat32(${expr})`;
-      case "float64": case "float": case "decimal": return `${w}.writeFloat64(${expr})`;
-      case "bytes": return `${w}.writeBytes(${expr})`;
-    }
+  if (isRecordType(type)) {
+    const elem = recordElementType(type);
+    const swiftElem = typeToSwift(elem);
+    return `try { () throws -> [String: ${swiftElem}] in var _m: [String: ${swiftElem}] = [:]; try r.beginObject(); while try r.hasNextField() { let _k = try r.readFieldName(); _m[_k] = ${readExpr(elem)} }; try r.endObject(); return _m }()`;
   }
-  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
-  if (isModelType(type)) {
-    return `_writeMsgPack${(type as Model).name}(${w}, ${expr})`;
-  }
-  return `/* TODO: unknown type */`;
-}
-
-function readExpr(type: Type): string {
   const sn = scalarName(type);
   if (sn) {
     switch (sn) {
@@ -165,16 +166,15 @@ function readExpr(type: Type): string {
     }
   }
   if (type.kind === "Enum") return "try r.readEnum()";
-  if (isArrayType(type)) {
-    const elem = arrayElementType(type);
-    const sw = typeToSwift(type);
-    return `try { var _arr: ${sw} = []; try r.beginArray(); while try r.hasNextElement() { _arr.append(${readExpr(elem)}) }; try r.endArray(); return _arr }()`;
-  }
   if (type.kind === "Model") {
     const modelName = (type as Model).name;
-    return `try ${modelName}Codec.decode(r)`;
+    if (!modelName) return "try r.readString()";
+    if (optional) {
+      return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try _decode${modelName}(r) }()`;
+    }
+    return `try _decode${modelName}(r)`;
   }
-  return "/* TODO: read */";
+  return "try r.readString()";
 }
 
 function extractFields(model: Model): FieldInfo[] {
@@ -208,7 +208,15 @@ function emitModel(m: Model): string {
     const swType = typeToSwift(f.type);
     lines.push(`    public var ${f.name}: ${swType}${f.optional ? "?" : ""}`);
   }
+  // Add default init() for model types to use in decode functions
   if (fields.length > 0) {
+    lines.push(`    public init() {`);
+    for (const f of fields) {
+      const defaultVal = f.optional ? "nil" : defaultForSwiftType(typeToSwift(f.type));
+      lines.push(`        ${f.name} = ${defaultVal}`);
+    }
+    lines.push(`    }`);
+    // Also add parameterized init
     const initParams = fields.map(f => {
       const swType = typeToSwift(f.type);
       return f.optional ? `${f.name}: ${swType}? = nil` : `${f.name}: ${swType}`;
@@ -221,20 +229,7 @@ function emitModel(m: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`private func _writeJson${name}(_ w: JsonWriter, _ obj: ${name}) {`);
-  lines.push(`    w.beginObject()`);
-  for (const f of fields) {
-    if (f.optional) {
-      lines.push(`    if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeJsonExpr(`_${f.name}`, f.type, "w")} }`);
-    } else {
-      lines.push(`    w.writeField("${f.name}"); ${writeJsonExpr(`obj.${f.name}`, f.type, "w")}`);
-    }
-  }
-  lines.push(`    w.endObject()`);
-  lines.push(`}`);
-  lines.push(``);
-
-  lines.push(`private func _writeMsgPack${name}(_ w: MsgPackWriter, _ obj: ${name}) {`);
+  lines.push(`private func _write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
   if (optionalFields.length > 0) {
     lines.push(`    var _n = ${requiredFields.length}`);
     for (const f of optionalFields) {
@@ -246,54 +241,54 @@ function emitModel(m: Model): string {
   }
   for (const f of fields) {
     if (f.optional) {
-      lines.push(`    if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeMsgPackExpr(`_${f.name}`, f.type, "w")} }`);
+      lines.push(`    if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeExpr(`_${f.name}`, f.type, "w")} }`);
     } else {
-      lines.push(`    w.writeField("${f.name}"); ${writeMsgPackExpr(`obj.${f.name}`, f.type, "w")}`);
+      lines.push(`    w.writeField("${f.name}"); ${writeExpr(`obj.${f.name}`, f.type, "w")}`);
     }
   }
   lines.push(`    w.endObject()`);
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`nonisolated(unsafe) public let ${name}Codec = SpecCodec<${name}>(`);
-  lines.push(`    encodeJson: { obj in`);
-  lines.push(`        let w = JsonWriter()`);
-  lines.push(`        _writeJson${name}(w, obj)`);
-  lines.push(`        return w.toBytes()`);
-  lines.push(`    },`);
-  lines.push(`    encodeMsgPack: { obj in`);
-  lines.push(`        let w = MsgPackWriter()`);
-  lines.push(`        _writeMsgPack${name}(w, obj)`);
-  lines.push(`        return w.toBytes()`);
-  lines.push(`    },`);
-  lines.push(`    decode: { r in`);
+  // Standalone decode function (avoids circular reference in static let codec)
+  lines.push(`private func _decode${name}(_ r: any SpecReader) throws -> ${name} {`);
   for (const f of fields) {
     const swType = typeToSwift(f.type);
     if (f.optional) {
-      lines.push(`        var _${f.name}: ${swType}? = nil`);
-    } else if (isModelType(f.type)) {
-      lines.push(`        var _${f.name}: ${swType}! = nil`);
+      lines.push(`    var _${f.name}: ${swType}? = nil`);
     } else {
-      lines.push(`        var _${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
+      lines.push(`    var _${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
     }
   }
-  lines.push(`        try r.beginObject()`);
-  lines.push(`        while try r.hasNextField() {`);
-  lines.push(`            switch try r.readFieldName() {`);
+  lines.push(`    try r.beginObject()`);
+  lines.push(`    while try r.hasNextField() {`);
+  lines.push(`        switch try r.readFieldName() {`);
   for (const f of fields) {
-    lines.push(`            case "${f.name}": _${f.name} = ${readExpr(f.type)}`);
+    lines.push(`        case "${f.name}": _${f.name} = ${readExpr(f.type, f.optional)}`);
   }
-  lines.push(`            default: try r.skip()`);
-  lines.push(`            }`);
+  lines.push(`        default: try r.skip()`);
   lines.push(`        }`);
-  lines.push(`        try r.endObject()`);
-  const ctorArgs = fields.map(f => `${f.name}: _${f.name}`).join(", ");
-  lines.push(`        return ${name}(${ctorArgs})`);
   lines.push(`    }`);
-  lines.push(`)`);
+  lines.push(`    try r.endObject()`);
+  const ctorArgs = fields.map(f => `${f.name}: _${f.name}`).join(", ");
+  lines.push(`    return ${name}(${ctorArgs})`);
+  lines.push(`}`);
+  lines.push(``);
+
+  lines.push(`public enum ${name}Codec {`);
+  lines.push(`    public static let codec = SpecCodec<${name}>(`);
+  lines.push(`        encode: { w, obj in _write${name}(w, obj) },`);
+  lines.push(`        decode: { r throws in try _decode${name}(r) }`);
+  lines.push(`    )`);
+  lines.push(`}`);
   lines.push(``);
 
   return lines.join("\n");
+}
+
+function isStdLibNamespace(ns: Namespace): boolean {
+  const fullName = getNamespaceFullName(ns);
+  return fullName === "TypeSpec" || fullName.startsWith("TypeSpec.");
 }
 
 function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
@@ -301,13 +296,17 @@ function collectServices(program: Program): { serviceName: string; models: Model
   const result: { serviceName: string; models: Model[] }[] = [];
 
   function collectFromNs(ns: Namespace, iface?: Interface) {
+    if (isStdLibNamespace(ns)) return;
     const models: Model[] = [];
     const seen = new Set<string>();
     navigateTypesInNamespace(ns, {
       model: (m: Model) => {
         if (m.name && !seen.has(m.name) && !isArrayType(m)) {
-          models.push(m);
-          seen.add(m.name);
+          const modelNs = m.namespace;
+          if (modelNs && !isStdLibNamespace(modelNs)) {
+            models.push(m);
+            seen.add(m.name);
+          }
         }
       },
     });
