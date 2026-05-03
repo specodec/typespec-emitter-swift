@@ -1,6 +1,6 @@
 {
   "name": "@specodec/typespec-emitter-swift",
-  "version": "0.0.1",
+  "version": "0.0.26",
   "type": "module",
   "main": "dist/index.js",
   "typespec": {
@@ -28,10 +28,10 @@
     "watch": "tsc --watch"
   },
   "dependencies": {
-    "@specodec/typespec-emitter-core": "^0.0.1"
+    "@specodec/typespec-emitter-core": "^0.0.23"
   },
   "devDependencies": {
-    "@typespec/compiler": "1.11.0",
+    "@typespec/compiler": "^1.11.0",
     "typescript": "^5.8.0"
   }
 }

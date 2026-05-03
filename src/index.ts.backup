@@ -1,7 +1,12 @@
 import {
   EmitContext,
   emitFile,
+  listServices,
+  navigateTypesInNamespace,
   Model,
+  Namespace,
+  Interface,
+  Program,
   Type,
   Scalar,
   Diagnostic,
@@ -9,8 +14,7 @@ import {
 import {
   checkReservedKeyword,
   formatReservedError,
-  collectServices,
-  ServiceInfo,
+  isSpecodecModel,
 } from "@specodec/typespec-emitter-core";
 
 export type EmitterOptions = {
@@ -280,6 +284,35 @@ function emitModel(m: Model): string {
   return lines.join("\n");
 }
 
+function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
+  const services = listServices(program);
+  const result: { serviceName: string; models: Model[] }[] = [];
+  const globalSeen = new Set<string>();
+
+  function collectFromNs(ns: Namespace, iface?: Interface) {
+    const models: Model[] = [];
+    navigateTypesInNamespace(ns, {
+      model: (m: Model) => {
+        if (m.name && !globalSeen.has(m.name) && !isArrayType(m) && isSpecodecModel(program, m)) {
+          models.push(m);
+          globalSeen.add(m.name);
+        }
+      },
+    });
+    if (models.length > 0) {
+      result.push({ serviceName: iface?.name || ns.name || "TestService", models });
+    }
+  }
+
+  for (const svc of services) collectFromNs(svc.type);
+  if (result.length === 0) {
+    const globalNs = program.getGlobalNamespaceType();
+    for (const [, ns] of globalNs.namespaces) collectFromNs(ns);
+    collectFromNs(globalNs);
+  }
+  return result;
+}
+
 export async function $onEmit(context: EmitContext<EmitterOptions>) {
   const program = context.program;
   const outputDir = context.emitterOutputDir;
@@ -327,8 +360,7 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
     for (const m of svc.models) {
       lines.push(emitModel(m));
     }
-    const snake = (s: string) => s.replace(/([A-Z])/g, (m, c, i) => (i ? "_" : "") + c.toLowerCase());
-    const fileName = `${snake(svc.serviceName)}_types.swift`;
+    const fileName = `${svc.serviceName}Types.swift`;
     await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
   }
 }
