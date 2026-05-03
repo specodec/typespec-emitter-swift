@@ -3,63 +3,30 @@ import {
   emitFile,
   Model,
   Type,
-  Scalar,
-  Diagnostic,
 } from "@typespec/compiler";
 import {
-  checkReservedKeyword,
-  formatReservedError,
   collectServices,
   ServiceInfo,
+  BaseEmitterOptions,
+  FieldInfo,
+  extractFields,
+  scalarName,
+  isArrayType,
+  isRecordType,
+  isModelType,
+  arrayElementType,
+  recordElementType,
+  toSnakeCase,
+  toPascalCase,
+  checkAndReportReservedKeywords,
 } from "@specodec/typespec-emitter-core";
 
-export type EmitterOptions = {
-  "emitter-output-dir": string;
-  "ignore-reserved-keywords"?: boolean;
-};
-
-interface FieldInfo {
-  name: string;
-  type: Type;
-  optional: boolean;
-}
-
-function scalarName(type: Type): string | null {
-  if (type.kind !== "Scalar") return null;
-  const s = type as Scalar;
-  if (s.name) return s.name;
-  if (s.baseScalar) return scalarName(s.baseScalar);
-  return null;
-}
-
-function isArrayType(type: Type): boolean {
-  if (type.kind !== "Model" || !(type as Model).indexer) return false;
-  const keyName = ((type as Model).indexer!.key as any).name;
-  return keyName === "integer";
-}
-
-function isRecordType(type: Type): boolean {
-  if (type.kind !== "Model" || !(type as Model).indexer) return false;
-  const keyName = ((type as Model).indexer!.key as any).name;
-  return keyName === "string";
-}
-
-function isModelType(type: Type): boolean {
-  return type.kind === "Model" && !!(type as Model).name && !isArrayType(type) && !isRecordType(type);
-}
-
-function arrayElementType(type: Type): Type {
-  return (type as Model).indexer!.value;
-}
-
-function recordElementType(type: Type): Type {
-  return (type as Model).indexer!.value;
-}
+export type EmitterOptions = BaseEmitterOptions;
 
 function typeToSwift(type: Type): string {
-  const name = scalarName(type);
-  if (name) {
-    switch (name) {
+  const n = scalarName(type);
+  if (n) {
+    switch (n) {
       case "string": return "String";
       case "boolean": return "Bool";
       case "int8": return "Int8";
@@ -91,13 +58,11 @@ function defaultForSwiftType(swiftType: string): string {
     case "Float": case "Double": return "0.0";
     case "Data": return "Data()";
   }
-  // For model types, use default initializer
   if (swiftType.startsWith("[String:")) return "[:]";
   if (swiftType.startsWith("[")) return "[]";
   return `${swiftType}()`;
 }
 
-// Single format-agnostic write expression using SpecWriter
 function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
@@ -107,9 +72,9 @@ function writeExpr(expr: string, type: Type, w: string): string {
     const elem = recordElementType(type);
     return `${w}.beginObject(${expr}.count); for (_k, _v) in ${expr} { ${w}.writeField(_k); ${writeExpr("_v", elem, w)} }; ${w}.endObject()`;
   }
-  const sn = scalarName(type);
-  if (sn) {
-    switch (sn) {
+  const n = scalarName(type);
+  if (n) {
+    switch (n) {
       case "string": return `${w}.writeString(${expr})`;
       case "boolean": return `${w}.writeBool(${expr})`;
       case "int8": return `${w}.writeInt32(Int32(${expr}))`;
@@ -126,9 +91,7 @@ function writeExpr(expr: string, type: Type, w: string): string {
     }
   }
   if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
-  if (isModelType(type)) {
-    return `_write${(type as Model).name}(${w}, ${expr})`;
-  }
+  if (isModelType(type)) return `_write${(type as Model).name}(${w}, ${expr})`;
   return `/* TODO: unknown type */`;
 }
 
@@ -143,9 +106,9 @@ function readExpr(type: Type, optional?: boolean): string {
     const swiftElem = typeToSwift(elem);
     return `try { () throws -> [String: ${swiftElem}] in var _m: [String: ${swiftElem}] = [:]; try r.beginObject(); while try r.hasNextField() { let _k = try r.readFieldName(); _m[_k] = ${readExpr(elem)} }; try r.endObject(); return _m }()`;
   }
-  const sn = scalarName(type);
-  if (sn) {
-    switch (sn) {
+  const n = scalarName(type);
+  if (n) {
+    switch (n) {
       case "string": return "try r.readString()";
       case "boolean": return "try r.readBool()";
       case "int8": return "Int8(try r.readInt32())";
@@ -162,23 +125,12 @@ function readExpr(type: Type, optional?: boolean): string {
     }
   }
   if (type.kind === "Enum") return "try r.readEnum()";
-  if (type.kind === "Model") {
+  if (type.kind === "Model" && (type as Model).name) {
     const modelName = (type as Model).name;
-    if (!modelName) return "try r.readString()";
-    if (optional) {
-      return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try _decode${modelName}(r) }()`;
-    }
+    if (optional) return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try _decode${modelName}(r) }()`;
     return `try _decode${modelName}(r)`;
   }
   return "try r.readString()";
-}
-
-function extractFields(model: Model): FieldInfo[] {
-  const fields: FieldInfo[] = [];
-  for (const [name, prop] of model.properties) {
-    fields.push({ name, type: prop.type, optional: prop.optional ?? false });
-  }
-  return fields;
 }
 
 function isSelfReferencing(model: Model): boolean {
@@ -194,32 +146,27 @@ function isSelfReferencing(model: Model): boolean {
 function emitModel(m: Model): string {
   const name = m.name!;
   const fields = extractFields(m);
-  const lines: string[] = [];
   const requiredFields = fields.filter(f => !f.optional);
   const optionalFields = fields.filter(f => f.optional);
   const useClass = isSelfReferencing(m);
+  const lines: string[] = [];
 
-  lines.push(`public ${useClass ? 'final class' : 'struct'} ${name} {`);
+  lines.push(`public ${useClass ? "final class" : "struct"} ${name} {`);
   for (const f of fields) {
-    const swType = typeToSwift(f.type);
-    lines.push(`    public var ${f.name}: ${swType}${f.optional ? "?" : ""}`);
+    lines.push(`    public var ${f.name}: ${typeToSwift(f.type)}${f.optional ? "?" : ""}`);
   }
-  // Add default init() for model types to use in decode functions
   if (fields.length > 0) {
     lines.push(`    public init() {`);
     for (const f of fields) {
-      const defaultVal = f.optional ? "nil" : defaultForSwiftType(typeToSwift(f.type));
-      lines.push(`        ${f.name} = ${defaultVal}`);
+      lines.push(`        ${f.name} = ${f.optional ? "nil" : defaultForSwiftType(typeToSwift(f.type))}`);
     }
     lines.push(`    }`);
-    // Also add parameterized init
     const initParams = fields.map(f => {
       const swType = typeToSwift(f.type);
       return f.optional ? `${f.name}: ${swType}? = nil` : `${f.name}: ${swType}`;
     }).join(", ");
     lines.push(`    public init(${initParams}) {`);
-    const assigns = fields.map(f => `self.${f.name} = ${f.name}`).join("; ");
-    lines.push(`        ${assigns}`);
+    lines.push(`        ${fields.map(f => `self.${f.name} = ${f.name}`).join("; ")}`);
     lines.push(`    }`);
   }
   lines.push(`}`);
@@ -228,9 +175,7 @@ function emitModel(m: Model): string {
   lines.push(`private func _write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
   if (optionalFields.length > 0) {
     lines.push(`    var _n = ${requiredFields.length}`);
-    for (const f of optionalFields) {
-      lines.push(`    if obj.${f.name} != nil { _n += 1 }`);
-    }
+    for (const f of optionalFields) lines.push(`    if obj.${f.name} != nil { _n += 1 }`);
     lines.push(`    w.beginObject(_n)`);
   } else {
     lines.push(`    w.beginObject(${fields.length})`);
@@ -246,7 +191,6 @@ function emitModel(m: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  // Standalone decode function (avoids circular reference in static let codec)
   lines.push(`private func _decode${name}(_ r: any SpecReader) throws -> ${name} {`);
   for (const f of fields) {
     const swType = typeToSwift(f.type);
@@ -266,8 +210,7 @@ function emitModel(m: Model): string {
   lines.push(`        }`);
   lines.push(`    }`);
   lines.push(`    try r.endObject()`);
-  const ctorArgs = fields.map(f => `${f.name}: _${f.name}`).join(", ");
-  lines.push(`    return ${name}(${ctorArgs})`);
+  lines.push(`    return ${name}(${fields.map(f => `${f.name}: _${f.name}`).join(", ")})`);
   lines.push(`}`);
   lines.push(``);
 
@@ -284,51 +227,21 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
   const program = context.program;
   const outputDir = context.emitterOutputDir;
   const ignoreReservedKeywords = context.options["ignore-reserved-keywords"] ?? false;
-  const snake = (s: string) => s.replace(/([A-Z])/g, (m, c, i) => (i ? "_" : "") + c.toLowerCase());
   const services = collectServices(program);
 
-  const reservedFieldErrors: Diagnostic[] = [];
-  for (const svc of services) {
-    for (const m of svc.models) {
-      if (!m.name) continue;
-      for (const [fieldName, prop] of m.properties) {
-        const reservedIn = checkReservedKeyword(fieldName);
-        if (reservedIn.length > 0) {
-          const message = formatReservedError(fieldName, m.name, reservedIn);
-          const diag: Diagnostic = {
-            severity: "error",
-            code: "reserved-keyword",
-            message,
-            target: prop,
-          };
-          reservedFieldErrors.push(diag);
-        }
-      }
-    }
-  }
-
-  if (reservedFieldErrors.length > 0 && !ignoreReservedKeywords) {
-    program.reportDiagnostics(reservedFieldErrors);
-    return;
-  }
-
-  if (reservedFieldErrors.length > 0 && ignoreReservedKeywords) {
-    for (const diag of reservedFieldErrors) {
-      console.warn(`Warning: ${diag.message}`);
-    }
-  }
+  if (checkAndReportReservedKeywords(program, services, ignoreReservedKeywords)) return;
 
   for (const svc of services) {
-    if (svc.models.length === 0) continue;
     const lines: string[] = [];
+    lines.push("// Generated by @specodec/typespec-emitter-swift. DO NOT EDIT.");
     lines.push("import Foundation");
     lines.push("import Specodec");
     lines.push("");
     for (const m of svc.models) {
       lines.push(emitModel(m));
     }
-    const snake = (s: string) => s.replace(/([A-Z])/g, (m, c, i) => (i ? "_" : "") + c.toLowerCase());
-    const fileName = `${snake(svc.serviceName)}_types.swift`;
+    // Swift uses PascalCase file names
+    const fileName = `${toPascalCase(toSnakeCase(svc.serviceName))}Types.swift`;
     await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
   }
 }
