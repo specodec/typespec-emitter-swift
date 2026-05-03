@@ -2,7 +2,6 @@ import {
   EmitContext,
   emitFile,
   listServices,
-  getNamespaceFullName,
   navigateTypesInNamespace,
   Model,
   Namespace,
@@ -15,7 +14,8 @@ import {
 import {
   checkReservedKeyword,
   formatReservedError,
-} from "@specodec/typespec-specodec-core";
+  isSpecodecModel,
+} from "@specodec/typespec-emitter-core";
 
 export type EmitterOptions = {
   "emitter-output-dir": string;
@@ -275,20 +275,13 @@ function emitModel(m: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`public enum ${name}Codec {`);
-  lines.push(`    public static let codec = SpecCodec<${name}>(`);
-  lines.push(`        encode: { w, obj in _write${name}(w, obj) },`);
-  lines.push(`        decode: { r throws in try _decode${name}(r) }`);
-  lines.push(`    )`);
-  lines.push(`}`);
+  lines.push(`public let ${name}Codec = SpecCodec<${name}>(`);
+  lines.push(`    encode: { w, obj in _write${name}(w, obj) },`);
+  lines.push(`    decode: { r throws in try _decode${name}(r) }`);
+  lines.push(`)`);
   lines.push(``);
 
   return lines.join("\n");
-}
-
-function isStdLibNamespace(ns: Namespace): boolean {
-  const fullName = getNamespaceFullName(ns);
-  return fullName === "TypeSpec" || fullName.startsWith("TypeSpec.");
 }
 
 function collectServices(program: Program): { serviceName: string; models: Model[] }[] {
@@ -296,17 +289,13 @@ function collectServices(program: Program): { serviceName: string; models: Model
   const result: { serviceName: string; models: Model[] }[] = [];
 
   function collectFromNs(ns: Namespace, iface?: Interface) {
-    if (isStdLibNamespace(ns)) return;
     const models: Model[] = [];
     const seen = new Set<string>();
     navigateTypesInNamespace(ns, {
       model: (m: Model) => {
-        if (m.name && !seen.has(m.name) && !isArrayType(m)) {
-          const modelNs = m.namespace;
-          if (modelNs && !isStdLibNamespace(modelNs)) {
-            models.push(m);
-            seen.add(m.name);
-          }
+        if (m.name && !seen.has(m.name) && !isArrayType(m) && isSpecodecModel(program, m)) {
+          models.push(m);
+          seen.add(m.name);
         }
       },
     });
