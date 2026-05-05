@@ -18,6 +18,7 @@ import {
   recordElementType,
   toSnakeCase,
   toPascalCase,
+  dottedPathToSnakeCase,
   checkAndReportReservedKeywords,
 } from "@specodec/typespec-emitter-core";
 
@@ -241,7 +242,7 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
       lines.push(emitModel(m));
     }
     // Swift uses PascalCase file names
-    const fileName = `${toPascalCase(toSnakeCase(svc.serviceName))}Types.swift`;
+    const fileName = `${dottedPathToSnakeCase(svc.serviceName)}_types.swift`;
     await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
   }
 }
