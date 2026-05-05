@@ -66,11 +66,11 @@ function defaultForSwiftType(swiftType: string): string {
 function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
-    return `${w}.beginArray(${expr}.count); for _e in ${expr} { ${w}.nextElement(); ${writeExpr("_e", elem, w)} }; ${w}.endArray()`;
+    return `${w}.beginArray(${expr}.count); for item in ${expr} { ${w}.nextElement(); ${writeExpr("item", elem, w)} }; ${w}.endArray()`;
   }
   if (isRecordType(type)) {
     const elem = recordElementType(type);
-    return `${w}.beginObject(${expr}.count); for (_k, _v) in ${expr} { ${w}.writeField(_k); ${writeExpr("_v", elem, w)} }; ${w}.endObject()`;
+    return `${w}.beginObject(${expr}.count); for (key, val) in ${expr} { ${w}.writeField(key); ${writeExpr("val", elem, w)} }; ${w}.endObject()`;
   }
   const n = scalarName(type);
   if (n) {
@@ -91,7 +91,7 @@ function writeExpr(expr: string, type: Type, w: string): string {
     }
   }
   if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
-  if (isModelType(type)) return `_write${(type as Model).name}(${w}, ${expr})`;
+  if (isModelType(type)) return `write${(type as Model).name}(${w}, ${expr})`;
   return `/* TODO: unknown type */`;
 }
 
@@ -99,12 +99,12 @@ function readExpr(type: Type, optional?: boolean): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type);
     const swiftElem = typeToSwift(elem);
-    return `try { () throws -> [${swiftElem}] in var _a: [${swiftElem}] = []; try r.beginArray(); while try r.hasNextElement() { _a.append(${readExpr(elem)}) }; try r.endArray(); return _a }()`;
+    return `try { () throws -> [${swiftElem}] in var arr: [${swiftElem}] = []; try r.beginArray(); while try r.hasNextElement() { arr.append(${readExpr(elem)}) }; try r.endArray(); return arr }()`;
   }
   if (isRecordType(type)) {
     const elem = recordElementType(type);
     const swiftElem = typeToSwift(elem);
-    return `try { () throws -> [String: ${swiftElem}] in var _m: [String: ${swiftElem}] = [:]; try r.beginObject(); while try r.hasNextField() { let _k = try r.readFieldName(); _m[_k] = ${readExpr(elem)} }; try r.endObject(); return _m }()`;
+    return `try { () throws -> [String: ${swiftElem}] in var dict: [String: ${swiftElem}] = [:]; try r.beginObject(); while try r.hasNextField() { let key = try r.readFieldName(); dict[key] = ${readExpr(elem)} }; try r.endObject(); return dict }()`;
   }
   const n = scalarName(type);
   if (n) {
@@ -127,8 +127,8 @@ function readExpr(type: Type, optional?: boolean): string {
   if (type.kind === "Enum") return "try r.readEnum()";
   if (type.kind === "Model" && (type as Model).name) {
     const modelName = (type as Model).name;
-    if (optional) return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try _decode${modelName}(r) }()`;
-    return `try _decode${modelName}(r)`;
+    if (optional) return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try decode${modelName}(r) }()`;
+    return `try decode${modelName}(r)`;
   }
   return "try r.readString()";
 }
@@ -172,17 +172,17 @@ function emitModel(m: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`private func _write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
+  lines.push(`private func write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
   if (optionalFields.length > 0) {
-    lines.push(`    var _n = ${requiredFields.length}`);
-    for (const f of optionalFields) lines.push(`    if obj.${f.name} != nil { _n += 1 }`);
-    lines.push(`    w.beginObject(_n)`);
+    lines.push(`    var fieldCount = ${requiredFields.length}`);
+    for (const f of optionalFields) lines.push(`    if obj.${f.name} != nil { fieldCount += 1 }`);
+    lines.push(`    w.beginObject(fieldCount)`);
   } else {
     lines.push(`    w.beginObject(${fields.length})`);
   }
   for (const f of fields) {
     if (f.optional) {
-      lines.push(`    if let _${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeExpr(`_${f.name}`, f.type, "w")} }`);
+      lines.push(`    if let ${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeExpr(`${f.name}`, f.type, "w")} }`);
     } else {
       lines.push(`    w.writeField("${f.name}"); ${writeExpr(`obj.${f.name}`, f.type, "w")}`);
     }
@@ -191,32 +191,32 @@ function emitModel(m: Model): string {
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`private func _decode${name}(_ r: any SpecReader) throws -> ${name} {`);
+  lines.push(`private func decode${name}(_ r: any SpecReader) throws -> ${name} {`);
   for (const f of fields) {
     const swType = typeToSwift(f.type);
     if (f.optional) {
-      lines.push(`    var _${f.name}: ${swType}? = nil`);
+      lines.push(`    var ${f.name}: ${swType}? = nil`);
     } else {
-      lines.push(`    var _${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
+      lines.push(`    var ${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
     }
   }
   lines.push(`    try r.beginObject()`);
   lines.push(`    while try r.hasNextField() {`);
   lines.push(`        switch try r.readFieldName() {`);
   for (const f of fields) {
-    lines.push(`        case "${f.name}": _${f.name} = ${readExpr(f.type, f.optional)}`);
+    lines.push(`        case "${f.name}": ${f.name} = ${readExpr(f.type, f.optional)}`);
   }
   lines.push(`        default: try r.skip()`);
   lines.push(`        }`);
   lines.push(`    }`);
   lines.push(`    try r.endObject()`);
-  lines.push(`    return ${name}(${fields.map(f => `${f.name}: _${f.name}`).join(", ")})`);
+  lines.push(`    return ${name}(${fields.map(f => `${f.name}: ${f.name}`).join(", ")})`);
   lines.push(`}`);
   lines.push(``);
 
   lines.push(`public let ${name}Codec = SpecCodec<${name}>(`);
-  lines.push(`    encode: { w, obj in _write${name}(w, obj) },`);
-  lines.push(`    decode: { r throws in try _decode${name}(r) }`);
+  lines.push(`    encode: { w, obj in write${name}(w, obj) },`);
+  lines.push(`    decode: { r throws in try decode${name}(r) }`);
   lines.push(`)`);
   lines.push(``);
 
