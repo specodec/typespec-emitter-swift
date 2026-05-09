@@ -1,14 +1,10 @@
-import {
-  EmitContext,
-  emitFile,
-  Model,
-  Type,
-} from "@typespec/compiler";
+import { type EmitContext, emitFile, type Model, type Type, type Enum, type Union } from "@typespec/compiler";
 import {
   collectServices,
-  ServiceInfo,
-  BaseEmitterOptions,
-  FieldInfo,
+  type BaseEmitterOptions,
+  type EnumInfo,
+  type EnumMemberInfo,
+  type FieldInfo,
   extractFields,
   scalarName,
   isArrayType,
@@ -16,10 +12,14 @@ import {
   isModelType,
   arrayElementType,
   recordElementType,
-  toSnakeCase,
-  toPascalCase,
+  toCamelCase,
   dottedPathToSnakeCase,
   checkAndReportReservedKeywords,
+  safeFieldName,
+  type UnionInfo,
+  type UnionVariantInfo,
+  isUnionType,
+  isScalarVariant,
 } from "@specodec/typespec-emitter-core";
 
 export type EmitterOptions = BaseEmitterOptions;
@@ -28,36 +28,66 @@ function typeToSwift(type: Type): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return "String";
-      case "boolean": return "Bool";
-      case "int8": return "Int8";
-      case "int16": return "Int16";
-      case "int32": case "integer": return "Int32";
-      case "int64": return "Int64";
-      case "uint8": return "UInt8";
-      case "uint16": return "UInt16";
-      case "uint32": return "UInt32";
-      case "uint64": return "UInt64";
-      case "float32": return "Float";
-      case "float64": case "float": case "decimal": return "Double";
-      case "bytes": return "Data";
+      case "string":
+        return "String";
+      case "boolean":
+        return "Bool";
+      case "int8":
+        return "Int8";
+      case "int16":
+        return "Int16";
+      case "int32":
+      case "integer":
+        return "Int32";
+      case "int64":
+        return "Int64";
+      case "uint8":
+        return "UInt8";
+      case "uint16":
+        return "UInt16";
+      case "uint32":
+        return "UInt32";
+      case "uint64":
+        return "UInt64";
+      case "float32":
+        return "Float";
+      case "float64":
+      case "float":
+      case "decimal":
+        return "Double";
+      case "bytes":
+        return "Data";
     }
   }
   if (type.kind === "Enum") return "String";
   if (isArrayType(type)) return `[${typeToSwift(arrayElementType(type))}]`;
   if (isRecordType(type)) return `[String: ${typeToSwift(recordElementType(type))}]`;
   if (type.kind === "Model") return (type as Model).name || "Any";
+  if (isUnionType(type)) return (type as Union).name || "Any";
   return "Any";
 }
 
-function defaultForSwiftType(swiftType: string): string {
+function defaultForSwiftType(type: Type, swiftType: string): string {
   switch (swiftType) {
-    case "String": return `""`;
-    case "Bool": return "false";
-    case "Int8": case "Int16": case "Int32": case "Int64": return "0";
-    case "UInt8": case "UInt16": case "UInt32": case "UInt64": return "0";
-    case "Float": case "Double": return "0.0";
-    case "Data": return "Data()";
+    case "String":
+      return `""`;
+    case "Bool":
+      return "false";
+    case "Int8":
+    case "Int16":
+    case "Int32":
+    case "Int64":
+      return "0";
+    case "UInt8":
+    case "UInt16":
+    case "UInt32":
+    case "UInt64":
+      return "0";
+    case "Float":
+    case "Double":
+      return "0.0";
+    case "Data":
+      return "Data()";
   }
   if (swiftType.startsWith("[String:")) return "[:]";
   if (swiftType.startsWith("[")) return "[]";
@@ -76,23 +106,40 @@ function writeExpr(expr: string, type: Type, w: string): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return `${w}.writeString(${expr})`;
-      case "boolean": return `${w}.writeBool(${expr})`;
-      case "int8": return `${w}.writeInt32(Int32(${expr}))`;
-      case "int16": return `${w}.writeInt32(Int32(${expr}))`;
-      case "int32": case "integer": return `${w}.writeInt32(${expr})`;
-      case "int64": return `${w}.writeInt64(${expr})`;
-      case "uint8": return `${w}.writeUint32(UInt32(${expr}))`;
-      case "uint16": return `${w}.writeUint32(UInt32(${expr}))`;
-      case "uint32": return `${w}.writeUint32(${expr})`;
-      case "uint64": return `${w}.writeUint64(${expr})`;
-      case "float32": return `${w}.writeFloat32(${expr})`;
-      case "float64": case "float": case "decimal": return `${w}.writeFloat64(${expr})`;
-      case "bytes": return `${w}.writeBytes(${expr})`;
+      case "string":
+        return `${w}.writeString(${expr})`;
+      case "boolean":
+        return `${w}.writeBool(${expr})`;
+      case "int8":
+        return `${w}.writeInt32(Int32(${expr}))`;
+      case "int16":
+        return `${w}.writeInt32(Int32(${expr}))`;
+      case "int32":
+      case "integer":
+        return `${w}.writeInt32(${expr})`;
+      case "int64":
+        return `${w}.writeInt64(${expr})`;
+      case "uint8":
+        return `${w}.writeUint32(UInt32(${expr}))`;
+      case "uint16":
+        return `${w}.writeUint32(UInt32(${expr}))`;
+      case "uint32":
+        return `${w}.writeUint32(${expr})`;
+      case "uint64":
+        return `${w}.writeUint64(${expr})`;
+      case "float32":
+        return `${w}.writeFloat32(${expr})`;
+      case "float64":
+      case "float":
+      case "decimal":
+        return `${w}.writeFloat64(${expr})`;
+      case "bytes":
+        return `${w}.writeBytes(${expr})`;
     }
   }
-  if (type.kind === "Enum") return `${w}.writeEnum(${expr})`;
+  if (type.kind === "Enum") return `${w}.writeString(${expr})`;
   if (isModelType(type)) return `write${(type as Model).name}(${w}, ${expr})`;
+  if (isUnionType(type)) return `write${(type as Union).name}(${w}, ${expr})`;
   return `/* TODO: unknown type */`;
 }
 
@@ -110,26 +157,49 @@ function readExpr(type: Type, optional?: boolean): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
-      case "string": return "try r.readString()";
-      case "boolean": return "try r.readBool()";
-      case "int8": return "Int8(try r.readInt32())";
-      case "int16": return "Int16(try r.readInt32())";
-      case "int32": case "integer": return "try r.readInt32()";
-      case "int64": return "try r.readInt64()";
-      case "uint8": return "UInt8(try r.readUint32())";
-      case "uint16": return "UInt16(try r.readUint32())";
-      case "uint32": return "try r.readUint32()";
-      case "uint64": return "try r.readUint64()";
-      case "float32": return "try r.readFloat32()";
-      case "float64": case "float": case "decimal": return "try r.readFloat64()";
-      case "bytes": return "try r.readBytes()";
+      case "string":
+        return "try r.readString()";
+      case "boolean":
+        return "try r.readBool()";
+      case "int8":
+        return "Int8(try r.readInt32())";
+      case "int16":
+        return "Int16(try r.readInt32())";
+      case "int32":
+      case "integer":
+        return "try r.readInt32()";
+      case "int64":
+        return "try r.readInt64()";
+      case "uint8":
+        return "UInt8(try r.readUint32())";
+      case "uint16":
+        return "UInt16(try r.readUint32())";
+      case "uint32":
+        return "try r.readUint32()";
+      case "uint64":
+        return "try r.readUint64()";
+      case "float32":
+        return "try r.readFloat32()";
+      case "float64":
+      case "float":
+      case "decimal":
+        return "try r.readFloat64()";
+      case "bytes":
+        return "try r.readBytes()";
     }
   }
-  if (type.kind === "Enum") return "try r.readEnum()";
+  if (type.kind === "Enum") return "try r.readString()";
   if (type.kind === "Model" && (type as Model).name) {
     const modelName = (type as Model).name;
-    if (optional) return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try decode${modelName}(r) }()`;
+    if (optional)
+      return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try decode${modelName}(r) }()`;
     return `try decode${modelName}(r)`;
+  }
+  if (isUnionType(type) && (type as Union).name) {
+    const unionName = (type as Union).name;
+    if (optional)
+      return `try { () throws -> ${unionName}? in if try r.isNull() { try r.readNull(); return nil }; return try decode${unionName}(r) }()`;
+    return `try decode${unionName}(r)`;
   }
   return "try r.readString()";
 }
@@ -144,74 +214,94 @@ function isSelfReferencing(model: Model): boolean {
   return false;
 }
 
+function generateEnumCode(e: EnumInfo): string {
+  const lines: string[] = [];
+  lines.push(`public enum ${e.name}: Int {`);
+  for (const m of e.members) {
+    lines.push(`    case ${m.name} = ${m.value}`);
+  }
+  lines.push(`}`);
+  return lines.join("\n");
+}
+
 function emitModel(m: Model): string {
   const name = m.name!;
   const fields = extractFields(m);
-  const requiredFields = fields.filter(f => !f.optional);
-  const optionalFields = fields.filter(f => f.optional);
+  const requiredFields = fields.filter((f) => !f.optional);
+  const optionalFields = fields.filter((f) => f.optional);
   const useClass = isSelfReferencing(m);
+  const swiftField = (f: FieldInfo) => safeFieldName("swift", toCamelCase(f.name));
   const lines: string[] = [];
 
   lines.push(`public ${useClass ? "final class" : "struct"} ${name} {`);
   for (const f of fields) {
-    lines.push(`    public var ${f.name}: ${typeToSwift(f.type)}${f.optional ? "?" : ""}`);
+    lines.push(`    public var ${swiftField(f)}: ${typeToSwift(f.type)}${f.optional ? "?" : ""}`);
   }
-  if (fields.length > 0) {
+  const hasUnionField = fields.some((f) => !f.optional && isUnionType(f.type));
+  if (fields.length > 0 && !hasUnionField) {
     lines.push(`    public init() {`);
     for (const f of fields) {
-      lines.push(`        ${f.name} = ${f.optional ? "nil" : defaultForSwiftType(typeToSwift(f.type))}`);
+      lines.push(`        ${swiftField(f)} = ${f.optional ? "nil" : defaultForSwiftType(f.type, typeToSwift(f.type))}`);
     }
     lines.push(`    }`);
-    const initParams = fields.map(f => {
-      const swType = typeToSwift(f.type);
-      return f.optional ? `${f.name}: ${swType}? = nil` : `${f.name}: ${swType}`;
-    }).join(", ");
+    const initParams = fields
+      .map((f) => {
+        const swType = typeToSwift(f.type);
+        return f.optional ? `${swiftField(f)}: ${swType}? = nil` : `${swiftField(f)}: ${swType}`;
+      })
+      .join(", ");
     lines.push(`    public init(${initParams}) {`);
-    lines.push(`        ${fields.map(f => `self.${f.name} = ${f.name}`).join("; ")}`);
+    lines.push(`        ${fields.map((f) => `self.${swiftField(f)} = ${swiftField(f)}`).join("; ")}`);
     lines.push(`    }`);
   }
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`private func write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
+  lines.push(`public func write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
   if (optionalFields.length > 0) {
     lines.push(`    var fieldCount = ${requiredFields.length}`);
-    for (const f of optionalFields) lines.push(`    if obj.${f.name} != nil { fieldCount += 1 }`);
+    for (const f of optionalFields) lines.push(`    if obj.${swiftField(f)} != nil { fieldCount += 1 }`);
     lines.push(`    w.beginObject(fieldCount)`);
   } else {
     lines.push(`    w.beginObject(${fields.length})`);
   }
   for (const f of fields) {
     if (f.optional) {
-      lines.push(`    if let ${f.name} = obj.${f.name} { w.writeField("${f.name}"); ${writeExpr(`${f.name}`, f.type, "w")} }`);
+      lines.push(
+        `    if let ${swiftField(f)} = obj.${swiftField(f)} { w.writeField("${f.name}"); ${writeExpr(`${swiftField(f)}`, f.type, "w")} }`,
+      );
     } else {
-      lines.push(`    w.writeField("${f.name}"); ${writeExpr(`obj.${f.name}`, f.type, "w")}`);
+      lines.push(`    w.writeField("${f.name}"); ${writeExpr(`obj.${swiftField(f)}`, f.type, "w")}`);
     }
   }
   lines.push(`    w.endObject()`);
   lines.push(`}`);
   lines.push(``);
 
-  lines.push(`private func decode${name}(_ r: any SpecReader) throws -> ${name} {`);
+  lines.push(`public func decode${name}(_ r: any SpecReader) throws -> ${name} {`);
   for (const f of fields) {
+    const sf = toCamelCase(f.name);
     const swType = typeToSwift(f.type);
     if (f.optional) {
-      lines.push(`    var ${f.name}: ${swType}? = nil`);
+      lines.push(`    var ${sf}: ${swType}? = nil`);
+    } else if (isUnionType(f.type)) {
+      lines.push(`    var ${sf}: ${swType} = .${swType}Undefined(.instance)`);
     } else {
-      lines.push(`    var ${f.name}: ${swType} = ${defaultForSwiftType(swType)}`);
+      lines.push(`    var ${sf}: ${swType} = ${defaultForSwiftType(f.type, swType)}`);
     }
   }
   lines.push(`    try r.beginObject()`);
   lines.push(`    while try r.hasNextField() {`);
   lines.push(`        switch try r.readFieldName() {`);
   for (const f of fields) {
-    lines.push(`        case "${f.name}": ${f.name} = ${readExpr(f.type, f.optional)}`);
+    const sf = toCamelCase(f.name);
+    lines.push(`        case "${f.name}": ${sf} = ${readExpr(f.type, f.optional)}`);
   }
   lines.push(`        default: try r.skip()`);
   lines.push(`        }`);
   lines.push(`    }`);
   lines.push(`    try r.endObject()`);
-  lines.push(`    return ${name}(${fields.map(f => `${f.name}: ${f.name}`).join(", ")})`);
+  lines.push(`    return ${name}(${fields.map((f) => `${toCamelCase(f.name)}: ${toCamelCase(f.name)}`).join(", ")})`);
   lines.push(`}`);
   lines.push(``);
 
@@ -222,6 +312,55 @@ function emitModel(m: Model): string {
   lines.push(``);
 
   return lines.join("\n");
+}
+
+function generateUnionCode(u: UnionInfo, L: string[]): void {
+  const name = u.name;
+  L.push(`public enum ${name} {`);
+  for (const v of u.variants) {
+    const pascal = v.name.charAt(0).toUpperCase() + v.name.slice(1);
+    L.push(`    case ${name}${pascal}(${typeToSwift(v.type)})`);
+  }
+  L.push(`    case ${name}Undefined(SpecUndefined)`);
+  L.push(`}`);
+  L.push(``);
+
+  L.push(`public func write${name}(_ w: any SpecWriter, _ obj: ${name}) {`);
+  L.push(`    w.beginObject(1)`);
+  L.push(`    switch obj {`);
+  for (const v of u.variants) {
+    const pascal = v.name.charAt(0).toUpperCase() + v.name.slice(1);
+    L.push(`    case .${name}${pascal}(let v): w.writeField("${v.name}"); ${writeExpr("v", v.type, "w")}`);
+  }
+  L.push(`    case .${name}Undefined: throw SCodecError(code: "undefinedVariant", message: "Cannot encode undefined variant of ${name}")`);
+  L.push(`    }`);
+  L.push(`    w.endObject()`);
+  L.push(`}`);
+  L.push(``);
+
+  L.push(`public func decode${name}(_ r: any SpecReader) throws -> ${name} {`);
+  L.push(`    try r.beginObject()`);
+  L.push(`    guard try r.hasNextField() else { try r.endObject(); throw SCodecError(code: "unknownField", message: "empty union") }`);
+  L.push(`    let field = try r.readFieldName()`);
+  L.push(`    var result: ${name} = .${name}Undefined(.instance)`);
+  L.push(`    switch field {`);
+  for (const v of u.variants) {
+    const pascal = v.name.charAt(0).toUpperCase() + v.name.slice(1);
+    L.push(`    case "${v.name}": result = .${name}${pascal}(${readExpr(v.type)})`);
+  }
+  L.push(`    default: throw SCodecError(code: "unknownField", message: "unknown variant \\(field)")`);
+  L.push(`    }`);
+  L.push(`    while try r.hasNextField() { _ = try r.readFieldName(); try r.skip() }`);
+  L.push(`    try r.endObject()`);
+  L.push(`    return result`);
+  L.push(`}`);
+  L.push(``);
+
+  L.push(`public let ${name}Codec = SpecCodec<${name}>(`);
+  L.push(`    encode: { w, obj in write${name}(w, obj) },`);
+  L.push(`    decode: { r throws in try decode${name}(r) }`);
+  L.push(`)`);
+  L.push(`}`);
 }
 
 export async function $onEmit(context: EmitContext<EmitterOptions>) {
@@ -237,9 +376,15 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
     lines.push("// Generated by @specodec/typespec-emitter-swift. DO NOT EDIT.");
     lines.push("import Foundation");
     lines.push("import Specodec");
+    lines.push("import SpecUndefined");
     lines.push("");
+    for (const e of svc.enums) lines.push(generateEnumCode(e));
+    if (svc.enums.length > 0) lines.push("");
     for (const m of svc.models) {
       lines.push(emitModel(m));
+    }
+    for (const u of svc.unions) {
+      generateUnionCode(u, lines);
     }
     // Swift uses PascalCase file names
     const fileName = `${dottedPathToSnakeCase(svc.serviceName)}_types.swift`;
