@@ -332,7 +332,7 @@ function generateUnionCode(u: UnionInfo, L: string[]): void {
     const pascal = v.name.charAt(0).toUpperCase() + v.name.slice(1);
     L.push(`    case .${name}${pascal}(let v): w.writeField("${v.name}"); ${writeExpr("v", v.type, "w")}`);
   }
-  L.push(`    case .${name}Undefined: throw SCodecError(code: "undefinedVariant", message: "Cannot encode undefined variant of ${name}")`);
+    L.push(`    case .${name}Undefined: return  // cannot encode undefined variant`);
   L.push(`    }`);
   L.push(`    w.endObject()`);
   L.push(`}`);
@@ -360,7 +360,6 @@ function generateUnionCode(u: UnionInfo, L: string[]): void {
   L.push(`    encode: { w, obj in write${name}(w, obj) },`);
   L.push(`    decode: { r throws in try decode${name}(r) }`);
   L.push(`)`);
-  L.push(`}`);
 }
 
 export async function $onEmit(context: EmitContext<EmitterOptions>) {

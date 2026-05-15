@@ -1,6 +1,6 @@
 {
   "name": "@specodec/typespec-emitter-swift",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
   "typespec": {
@@ -31,13 +31,13 @@
   "devDependencies": {
     "@typespec/compiler": "^1.12.0",
     "typescript": "^5.8.0",
-    "@specodec/typespec-emitter-core": "^0.9.0"
+    "@specodec/typespec-emitter-core": "^1.0.0"
   },
   "publishConfig": {
     "registry": "http://10.199.64.20:3000/api/packages/specodec/npm/"
   },
   "peerDependencies": {
     "@typespec/compiler": "^1.12.0",
-    "@specodec/typespec-emitter-core": "^0.9.0"
+    "@specodec/typespec-emitter-core": "^1.0.0"
   }
 }
