@@ -14,6 +14,7 @@ import {
   recordElementType,
   toCamelCase,
   dottedPathToSnakeCase,
+  dottedPathToPascalCase,
   checkAndReportReservedKeywords,
   safeFieldName,
   type UnionInfo,
@@ -386,7 +387,7 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
       generateUnionCode(u, lines);
     }
     // Swift uses PascalCase file names
-    const fileName = `${dottedPathToSnakeCase(svc.serviceName)}_types.swift`;
+    const fileName = `${dottedPathToPascalCase(svc.serviceName)}Types.swift`;
     await emitFile(program, { path: `${outputDir}/${fileName}`, content: lines.join("\n") });
   }
 }
