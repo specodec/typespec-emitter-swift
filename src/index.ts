@@ -25,6 +25,11 @@ import {
 
 export type EmitterOptions = BaseEmitterOptions;
 
+let _tmpCounter = 0;
+function nextTmp(): string {
+  return `_tmp${_tmpCounter++}`;
+}
+
 function typeToSwift(type: Type): string {
   const n = scalarName(type);
   if (n) {
@@ -145,16 +150,6 @@ function writeExpr(expr: string, type: Type, w: string): string {
 }
 
 function readExpr(type: Type, optional?: boolean): string {
-  if (isArrayType(type)) {
-    const elem = arrayElementType(type)!;
-    const swiftElem = typeToSwift(elem);
-    return `try { () throws -> [${swiftElem}] in var arr: [${swiftElem}] = []; try r.beginArray(); while try r.hasNextElement() { arr.append(${readExpr(elem)}) }; try r.endArray(); return arr }()`;
-  }
-  if (isRecordType(type)) {
-    const elem = recordElementType(type)!;
-    const swiftElem = typeToSwift(elem);
-    return `try { () throws -> [String: ${swiftElem}] in var dict: [String: ${swiftElem}] = [:]; try r.beginObject(); while try r.hasNextField() { let key = try r.readFieldName(); dict[key] = ${readExpr(elem)} }; try r.endObject(); return dict }()`;
-  }
   const n = scalarName(type);
   if (n) {
     switch (n) {
@@ -203,6 +198,30 @@ function readExpr(type: Type, optional?: boolean): string {
     return `try decode${unionName}(r)`;
   }
   return "try r.readString()";
+}
+
+function generateFieldRead(L: string[], f: { name: string; type: any; optional: boolean }, varName: string, indent: string): void {
+  const tmp = nextTmp();
+  if (f.optional) {
+    L.push(`${indent}if try r.isNull() { try r.readNull(); ${varName} = nil; break }`);
+  }
+  if (isArrayType(f.type)) {
+    const elem = arrayElementType(f.type)!;
+    const swiftElem = typeToSwift(elem);
+    L.push(`${indent}var ${tmp}: [${swiftElem}] = []`);
+    L.push(`${indent}try r.beginArray()`);
+    L.push(`${indent}while try r.hasNextElement() { ${tmp}.append(${readExpr(elem)}) }`);
+    L.push(`${indent}try r.endArray()`);
+    L.push(`${indent}${varName} = ${tmp}`);
+  } else if (isRecordType(f.type)) {
+    const elem = recordElementType(f.type)!;
+    const swiftElem = typeToSwift(elem);
+    L.push(`${indent}var ${tmp}: [String: ${swiftElem}] = [:]`);
+    L.push(`${indent}try r.beginObject()`);
+    L.push(`${indent}while try r.hasNextField() { ${tmp}[try r.readFieldName()] = ${readExpr(elem)} }`);
+    L.push(`${indent}try r.endObject()`);
+    L.push(`${indent}${varName} = ${tmp}`);
+  }
 }
 
 function isSelfReferencing(model: Model): boolean {
@@ -296,7 +315,12 @@ function emitModel(m: Model): string {
   lines.push(`        switch try r.readFieldName() {`);
   for (const f of fields) {
     const sf = toCamelCase(f.name);
-    lines.push(`        case "${f.name}": ${sf} = ${readExpr(f.type, f.optional)}`);
+    if (isArrayType(f.type) || isRecordType(f.type)) {
+      lines.push(`        case "${f.name}":`);
+      generateFieldRead(lines, f, sf, "        ");
+    } else {
+      lines.push(`        case "${f.name}": ${sf} = ${readExpr(f.type, f.optional)}`);
+    }
   }
   lines.push(`        default: try r.skip()`);
   lines.push(`        }`);
