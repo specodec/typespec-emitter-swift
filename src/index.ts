@@ -27,7 +27,7 @@ export type EmitterOptions = BaseEmitterOptions;
 
 let _tmpCounter = 0;
 function nextTmp(): string {
-  return `_tmp`;
+  return `tmp`;
 }
 
 function typeToSwift(type: Type): string {
@@ -149,7 +149,7 @@ function writeExpr(expr: string, type: Type, w: string): string {
   return `/* TODO: unknown type */`;
 }
 
-function readExpr(type: Type, optional?: boolean): string {
+function readExpr(type: Type): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
@@ -187,41 +187,71 @@ function readExpr(type: Type, optional?: boolean): string {
   if (type.kind === "Enum") return "try r.readString()";
   if (type.kind === "Model" && (type as Model).name) {
     const modelName = (type as Model).name;
-    if (optional)
-      return `try { () throws -> ${modelName}? in if try r.isNull() { try r.readNull(); return nil }; return try decode${modelName}(r) }()`;
     return `try decode${modelName}(r)`;
   }
   if (isUnionType(type) && (type as Union).name) {
     const unionName = (type as Union).name;
-    if (optional)
-      return `try { () throws -> ${unionName}? in if try r.isNull() { try r.readNull(); return nil }; return try decode${unionName}(r) }()`;
     return `try decode${unionName}(r)`;
   }
   return "try r.readString()";
 }
 
-function generateFieldRead(L: string[], f: { name: string; type: any; optional: boolean }, varName: string, indent: string): void {
-  const tmp = nextTmp();
-  if (f.optional) {
-    L.push(`${indent}if try r.isNull() { try r.readNull(); ${varName} = nil; break }`);
-  }
+function generateFieldRead(f: { name: string; type: any; optional: boolean }): { stmts: string[]; value: string } {
   if (isArrayType(f.type)) {
     const elem = arrayElementType(f.type)!;
     const swiftElem = typeToSwift(elem);
-    L.push(`${indent}var ${tmp}: [${swiftElem}] = []`);
-    L.push(`${indent}try r.beginArray()`);
-    L.push(`${indent}while try r.hasNextElement() { ${tmp}.append(${readExpr(elem)}) }`);
-    L.push(`${indent}try r.endArray()`);
-    L.push(`${indent}${varName} = ${tmp}`);
-  } else if (isRecordType(f.type)) {
+    const tmp = nextTmp();
+    const stmts: string[] = [];
+    if (f.optional) {
+      stmts.push(`var ${tmp}: [${swiftElem}]? = nil`);
+      stmts.push(`if try r.isNull() { try r.readNull() } else {`);
+      stmts.push(`    var _arr: [${swiftElem}] = []`);
+      stmts.push(`    try r.beginArray()`);
+      stmts.push(`    while try r.hasNextElement() { _arr.append(${readExpr(elem)}) }`);
+      stmts.push(`    try r.endArray()`);
+      stmts.push(`    ${tmp} = _arr`);
+      stmts.push(`}`);
+      return { stmts, value: tmp };
+    } else {
+      stmts.push(`var ${tmp}: [${swiftElem}] = []`);
+      stmts.push(`try r.beginArray()`);
+      stmts.push(`while try r.hasNextElement() { ${tmp}.append(${readExpr(elem)}) }`);
+      stmts.push(`try r.endArray()`);
+      return { stmts, value: tmp };
+    }
+  }
+  if (isRecordType(f.type)) {
     const elem = recordElementType(f.type)!;
     const swiftElem = typeToSwift(elem);
-    L.push(`${indent}var ${tmp}: [String: ${swiftElem}] = [:]`);
-    L.push(`${indent}try r.beginObject()`);
-    L.push(`${indent}while try r.hasNextField() { ${tmp}[try r.readFieldName()] = ${readExpr(elem)} }`);
-    L.push(`${indent}try r.endObject()`);
-    L.push(`${indent}${varName} = ${tmp}`);
+    const tmp = nextTmp();
+    const stmts: string[] = [];
+    if (f.optional) {
+      stmts.push(`var ${tmp}: [String: ${swiftElem}]? = nil`);
+      stmts.push(`if try r.isNull() { try r.readNull() } else {`);
+      stmts.push(`    var _dict: [String: ${swiftElem}] = [:]`);
+      stmts.push(`    try r.beginObject()`);
+      stmts.push(`    while try r.hasNextField() { _dict[try r.readFieldName()] = ${readExpr(elem)} }`);
+      stmts.push(`    try r.endObject()`);
+      stmts.push(`    ${tmp} = _dict`);
+      stmts.push(`}`);
+      return { stmts, value: tmp };
+    } else {
+      stmts.push(`var ${tmp}: [String: ${swiftElem}] = [:]`);
+      stmts.push(`try r.beginObject()`);
+      stmts.push(`while try r.hasNextField() { ${tmp}[try r.readFieldName()] = ${readExpr(elem)} }`);
+      stmts.push(`try r.endObject()`);
+      return { stmts, value: tmp };
+    }
   }
+  if (f.optional && ((f.type.kind === "Model" && (f.type as Model).name) || (isUnionType(f.type) && (f.type as Union).name))) {
+    const swType = typeToSwift(f.type);
+    const tmp = nextTmp();
+    const stmts: string[] = [];
+    stmts.push(`var ${tmp}: ${swType}? = nil`);
+    stmts.push(`if try r.isNull() { try r.readNull() } else { ${tmp} = ${readExpr(f.type)} }`);
+    return { stmts, value: tmp };
+  }
+  return { stmts: [], value: readExpr(f.type) };
 }
 
 function isSelfReferencing(model: Model): boolean {
@@ -315,11 +345,15 @@ function emitModel(m: Model): string {
   lines.push(`        switch try r.readFieldName() {`);
   for (const f of fields) {
     const sf = toCamelCase(f.name);
-    if (isArrayType(f.type) || isRecordType(f.type)) {
+    const result = generateFieldRead(f);
+    if (result.stmts.length > 0) {
       lines.push(`        case "${f.name}":`);
-      generateFieldRead(lines, f, sf, "        ");
+      for (const stmt of result.stmts) {
+        lines.push(`            ${stmt}`);
+      }
+      lines.push(`            ${sf} = ${result.value}`);
     } else {
-      lines.push(`        case "${f.name}": ${sf} = ${readExpr(f.type, f.optional)}`);
+      lines.push(`        case "${f.name}": ${sf} = ${result.value}`);
     }
   }
   lines.push(`        default: try r.skip()`);
