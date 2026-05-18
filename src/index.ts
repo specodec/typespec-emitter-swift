@@ -27,7 +27,7 @@ export type EmitterOptions = BaseEmitterOptions;
 
 let _tmpCounter = 0;
 function nextTmp(): string {
-  return `tmp`;
+  return `tmp${_tmpCounter++}`;
 }
 
 function typeToSwift(type: Type): string {
