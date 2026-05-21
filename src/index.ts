@@ -30,7 +30,7 @@ function nextTmp(): string {
   return `tmp${_tmpCounter++}`;
 }
 
-function typeToSwift(type: Type): string {
+export function typeToSwift(type: Type): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
@@ -73,7 +73,7 @@ function typeToSwift(type: Type): string {
   return "Any";
 }
 
-function defaultForSwiftType(type: Type, swiftType: string): string {
+export function defaultForSwiftType(type: Type, swiftType: string): string {
   switch (swiftType) {
     case "String":
       return `""`;
@@ -100,7 +100,7 @@ function defaultForSwiftType(type: Type, swiftType: string): string {
   return `${swiftType}()`;
 }
 
-function writeExpr(expr: string, type: Type, w: string): string {
+export function writeExpr(expr: string, type: Type, w: string): string {
   if (isArrayType(type)) {
     const elem = arrayElementType(type)!;
     return `${w}.beginArray(${expr}.count); for item in ${expr} { ${w}.nextElement(); ${writeExpr("item", elem, w)} }; ${w}.endArray()`;
@@ -149,7 +149,7 @@ function writeExpr(expr: string, type: Type, w: string): string {
   return `/* TODO: unknown type */`;
 }
 
-function readExpr(type: Type): string {
+export function readExpr(type: Type): string {
   const n = scalarName(type);
   if (n) {
     switch (n) {
@@ -196,7 +196,7 @@ function readExpr(type: Type): string {
   return "try r.readString()";
 }
 
-function generateFieldRead(f: { name: string; type: any; optional: boolean }): { stmts: string[]; value: string } {
+export function generateFieldRead(f: { name: string; type: any; optional: boolean }): { stmts: string[]; value: string } {
   if (isArrayType(f.type)) {
     const elem = arrayElementType(f.type)!;
     const swiftElem = typeToSwift(elem);
@@ -264,7 +264,7 @@ function isSelfReferencing(model: Model): boolean {
   return false;
 }
 
-function generateEnumCode(e: EnumInfo): string {
+export function generateEnumCode(e: EnumInfo): string {
   const lines: string[] = [];
   lines.push(`public enum ${e.name}: Int {`);
   for (const m of e.members) {
@@ -274,7 +274,7 @@ function generateEnumCode(e: EnumInfo): string {
   return lines.join("\n");
 }
 
-function generateModelCode(m: Model): string {
+export function generateModelCode(m: Model): string {
   const name = m.name!;
   const fields = extractFields(m);
   const requiredFields = fields.filter((f) => !f.optional);
