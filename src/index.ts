@@ -274,7 +274,7 @@ function generateEnumCode(e: EnumInfo): string {
   return lines.join("\n");
 }
 
-function emitModel(m: Model): string {
+function generateModelCode(m: Model): string {
   const name = m.name!;
   const fields = extractFields(m);
   const requiredFields = fields.filter((f) => !f.optional);
@@ -439,7 +439,7 @@ export async function $onEmit(context: EmitContext<EmitterOptions>) {
     for (const e of svc.enums) lines.push(generateEnumCode(e));
     if (svc.enums.length > 0) lines.push("");
     for (const m of svc.models) {
-      lines.push(emitModel(m));
+      lines.push(generateModelCode(m));
     }
     for (const u of svc.unions) {
       generateUnionCode(u, lines);
