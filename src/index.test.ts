@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, rmSync } from 'fs';
+import { execSync } from 'child_process';
 import { describe, it, expect } from 'vitest';
 import { mkScalar, mkArray } from '@specodec/typespec-emitter-core/test-utils';
 import { typeToSwift, readExpr, writeExpr, writeLines, defaultValue } from './index.js';
@@ -19,4 +21,17 @@ describe('readExpr', () => {
   it('bool', () => expect(readExpr(mkScalar('boolean') as any)).toContain('readBool'));
   it('float32', () => expect(readExpr(mkScalar('float32') as any)).toContain('readFloat32'));
   it('bytes', () => expect(readExpr(mkScalar('bytes') as any)).toContain('readBytes'));
+});
+
+describe('generation + compile', () => {
+  const ROOT = join(__dir, '..');
+  const TSP = join(ROOT, 'node_modules', '.bin', 'tsp');
+  const TDIR = join(ROOT, 'tests');
+  const GEN = join(TDIR, 'generated');
+
+  it('tsp generates ~200 codec files', () => {
+    if (existsSync(GEN)) rmSync(GEN, { recursive: true });
+    execSync(`${TSP} compile alltypes.tsp --emit=@specodec/typespec-emitter-swift --option @specodec/typespec-emitter-swift.emitter-output-dir=generated`, { cwd: TDIR, stdio: 'pipe' });
+    expect(readdirSync(GEN).length).toBeGreaterThanOrEqual(10);
+  });
 });

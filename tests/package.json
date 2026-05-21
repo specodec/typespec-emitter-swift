@@ -1,0 +1,7 @@
+{
+  "name": "specodec-emitter-swift-tests",
+  "private": true,
+  "dependencies": {
+    "@specodec/typespec-emitter-swift": "file:.."
+  }
+}
